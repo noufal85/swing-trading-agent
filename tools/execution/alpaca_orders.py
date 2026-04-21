@@ -513,3 +513,26 @@ def poll_order_fill(order_id: str, max_attempts: int = 5, delay: float = 1.0) ->
                 time.sleep(delay)
 
     return {'order_id': order_id, 'filled': False, 'status': 'pending'}
+
+
+def get_order_fill(order_id: str) -> dict | None:
+    """Fetch fill details for a single order (no retry/polling).
+
+    Returns dict with filled_avg_price, filled_qty, filled_at if filled,
+    or None if not filled / error.
+    """
+    if not _ALPACA_AVAILABLE or not order_id:
+        return None
+    try:
+        client = _get_trading_client()
+        order = client.get_order_by_id(order_id)
+        status = str(order.status.value).lower() if order.status else ''
+        if status == 'filled' and order.filled_avg_price:
+            return {
+                'filled_avg_price': float(order.filled_avg_price),
+                'filled_qty': int(order.filled_qty) if order.filled_qty else 0,
+                'filled_at': order.filled_at.isoformat() if order.filled_at else None,
+            }
+    except Exception as exc:
+        logger.debug("get_order_fill(%s) failed: %s", order_id, exc)
+    return None

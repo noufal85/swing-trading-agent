@@ -81,6 +81,7 @@ def _record_trade(portfolio_state, pos, result, sim_date: str) -> None:
         holding_days=holding_days,
         signal_price=sig_price,
         slippage_bps=entry_slippage,
+        order_id=result.get('order_id', ''),
     )
     portfolio_state.record_trade(trade)
 

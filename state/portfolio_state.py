@@ -82,6 +82,7 @@ class Trade:
     holding_days: int = 0     # calendar days held
     signal_price: float = 0.0   # price at decision time (EOD close)
     slippage_bps: float = 0.0   # entry slippage: (fill - signal) / signal * 10000
+    order_id: str = ""          # Alpaca order ID for post-fill reconciliation
 
     @classmethod
     def from_dict(cls, data: dict) -> "Trade":

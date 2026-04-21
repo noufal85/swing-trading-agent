@@ -135,6 +135,11 @@ class IntradayCycleMixin:
                 if sym not in synced_syms:
                     del self.portfolio_state.positions[sym]
 
+        # ── Step 1b: Reconcile unfilled exit trades ─────────────────────
+        # Morning cycle records trades before Alpaca fills (pre-market orders).
+        # Now that the market is open, fetch actual fill prices.
+        self._reconcile_exit_fills()
+
         # ── Step 2: Drawdown check ───────────────────────────────────────
         dd = check_drawdown(
             current_value=portfolio['portfolio_value'],
@@ -603,6 +608,97 @@ class IntradayCycleMixin:
             'prompt': prompt,
             'pm_token_usage': self.get_token_usage(),
         }
+
+    # ------------------------------------------------------------------
+    # Exit fill reconciliation
+    # ------------------------------------------------------------------
+
+    def _reconcile_exit_fills(self) -> None:
+        """Patch trade_history entries missing actual fill prices.
+
+        Morning cycle records exits before pre-market orders fill.
+        By intraday the orders should be filled — fetch actual prices from Alpaca.
+        Supports both order_id lookup and symbol+date fallback for legacy trades.
+        """
+        from tools.execution.alpaca_orders import get_order_fill
+
+        unfilled = [t for t in self.portfolio_state.trade_history if t.price <= 0]
+        if not unfilled:
+            return
+
+        # Try order_id based lookup first
+        needs_fallback = []
+        updated = 0
+        for trade in unfilled:
+            if trade.order_id:
+                fill = get_order_fill(trade.order_id)
+                if fill:
+                    self._apply_fill_to_trade(trade, fill['filled_avg_price'])
+                    updated += 1
+                    continue
+            needs_fallback.append(trade)
+
+        # Fallback: query Alpaca closed sell orders and match by symbol + qty
+        if needs_fallback:
+            closed_fills = self._fetch_closed_sell_fills(
+                {t.symbol for t in needs_fallback},
+            )
+            for trade in needs_fallback:
+                key = (trade.symbol, trade.qty)
+                fill_price = closed_fills.get(key)
+                if fill_price:
+                    self._apply_fill_to_trade(trade, fill_price)
+                    updated += 1
+
+        if updated:
+            self.portfolio_state.save()
+            logger.info("Reconciled %d exit fills from Alpaca", updated)
+
+    def _apply_fill_to_trade(self, trade, fill_price: float) -> None:
+        trade.price = fill_price
+        if trade.entry_price > 0:
+            trade.pnl = round(
+                (trade.price - trade.entry_price) * trade.qty, 2,
+            )
+        logger.info(
+            "Reconciled %s exit: $%.2f qty=%d pnl=$%.2f",
+            trade.symbol, trade.price, trade.qty, trade.pnl,
+        )
+        print(f"  [INTRADAY] Reconciled {trade.symbol} exit fill: "
+              f"${trade.price:.2f} P&L ${trade.pnl:.2f}", flush=True)
+
+    @staticmethod
+    def _fetch_closed_sell_fills(symbols: set[str]) -> dict[tuple[str, int], float]:
+        """Fetch filled sell orders from Alpaca for given symbols.
+
+        Returns mapping of (symbol, qty) → filled_avg_price.
+        Most recent fill per (symbol, qty) wins.
+        """
+        try:
+            from tools.execution.portfolio_sync import _get_trading_client
+            from alpaca.trading.requests import GetOrdersRequest
+            from alpaca.trading.enums import QueryOrderStatus
+
+            client = _get_trading_client()
+            orders = client.get_orders(
+                filter=GetOrdersRequest(status=QueryOrderStatus.CLOSED),
+            )
+            fills: dict[tuple[str, int], float] = {}
+            for order in orders:
+                sym = order.symbol
+                if sym not in symbols:
+                    continue
+                side = str(order.side.value) if order.side else ''
+                status = str(order.status.value) if order.status else ''
+                if side != 'sell' or status != 'filled' or not order.filled_avg_price:
+                    continue
+                key = (sym, int(order.filled_qty) if order.filled_qty else 0)
+                if key not in fills:
+                    fills[key] = float(order.filled_avg_price)
+            return fills
+        except Exception as exc:
+            logger.warning("Failed to fetch closed sell fills: %s", exc)
+            return {}
 
     # ------------------------------------------------------------------
     # Structured log

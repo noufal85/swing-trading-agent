@@ -123,10 +123,28 @@ def sync_positions_from_alpaca(existing_positions=None) -> dict:
 
         today_str = datetime.now(timezone.utc).date().isoformat()
 
+        # --- Fetch open orders (used for pending buy check + stop reconciliation) ---
+        all_open_orders = []
+        pending_buy_symbols: set[str] = set()
+        try:
+            all_open_orders = client.get_orders(
+                filter=GetOrdersRequest(status=QueryOrderStatus.OPEN)
+            )
+            for o in all_open_orders:
+                side = str(getattr(o, 'side', '')).lower()
+                if side == 'buy':
+                    pending_buy_symbols.add(o.symbol)
+        except Exception as exc:
+            logger.debug("Could not fetch open orders: %s", exc)
+
         # --- Detect closed positions (in local state but not in Alpaca) ---
+
         newly_closed = []
         for symbol in list(portfolio.positions.keys()):
             if symbol not in alpaca_symbols:
+                if symbol in pending_buy_symbols:
+                    logger.info("portfolio_sync: %s not in Alpaca positions but has pending buy — keeping", symbol)
+                    continue
                 local_pos = portfolio.positions[symbol]
                 exit_price = (
                     local_pos.current_price
@@ -219,16 +237,23 @@ def sync_positions_from_alpaca(existing_positions=None) -> dict:
             else:
                 stop_price = bracket_stop_map.get(ap.symbol, 0.0)
                 entry_date = bracket_entry_date_map.get(ap.symbol, '')
+                # Recover metadata from existing_positions if available
+                orig = (existing_positions or {}).get(ap.symbol)
                 portfolio.positions[ap.symbol] = Position(
                     symbol=ap.symbol,
                     qty=qty,
                     avg_entry_price=avg_entry,
                     current_price=current_price,
-                    stop_loss_price=stop_price,
+                    stop_loss_price=stop_price or (orig.stop_loss_price if orig else 0.0),
                     unrealized_pnl=unrealized_pl,
                     bracket_order_id=bracket_order_map.get(ap.symbol, ''),
                     highest_close=current_price,
-                    entry_date=entry_date,
+                    entry_date=entry_date or (orig.entry_date if orig else ''),
+                    strategy=orig.strategy if orig else '',
+                    signal_price=orig.signal_price if orig else 0.0,
+                    entry_conditions=orig.entry_conditions if orig else {},
+                    entry_qty=orig.entry_qty if orig else qty,
+                    scaled_entry=orig.scaled_entry if orig else False,
                 )
                 if stop_price > 0:
                     logger.info(
@@ -250,11 +275,8 @@ def sync_positions_from_alpaca(existing_positions=None) -> dict:
         # place a standalone GTC stop order. This covers cases where bracket
         # orders expired (day TIF) or container restarts lost order state.
         try:
-            open_orders = client.get_orders(
-                filter=GetOrdersRequest(status=QueryOrderStatus.OPEN)
-            )
             symbols_with_stop = set()
-            for o in open_orders:
+            for o in all_open_orders:
                 otype = str(getattr(o, 'type', '')).lower()
                 if otype in ('stop', 'stop_limit'):
                     symbols_with_stop.add(o.symbol)
