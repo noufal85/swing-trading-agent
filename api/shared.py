@@ -170,9 +170,16 @@ def partial_metrics_from_stats(daily_stats: list[dict], start_cash: float = 100_
 
 
 def read_settings() -> dict:
-    if SETTINGS_PATH.exists():
-        return read_json(SETTINGS_PATH)
-    return {}
+    settings = read_json(SETTINGS_PATH) if SETTINGS_PATH.exists() else {}
+    # Merge env vars as fallback so local mode works without UI key entry
+    keys = settings.setdefault("keys", {})
+    if not keys.get("alpaca_paper_api_key"):
+        keys["alpaca_paper_api_key"] = os.environ.get("ALPACA_API_KEY", "")
+    if not keys.get("alpaca_paper_secret_key"):
+        keys["alpaca_paper_secret_key"] = os.environ.get("ALPACA_SECRET_KEY", "")
+    if not keys.get("polygon_api_key"):
+        keys["polygon_api_key"] = os.environ.get("POLYGON_API_KEY", "")
+    return settings
 
 
 def write_settings(data: dict):

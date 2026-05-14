@@ -225,10 +225,11 @@ class TradingScheduler:
         Logs the next fire time for each registered job on startup.
         """
         for job in self.scheduler.get_jobs():
+            next_run = getattr(job, "next_fire_time", None) or getattr(job, "next_run_time", None)
             logger.info(
                 "Scheduled job '%s' — next run: %s",
                 job.name,
-                job.next_run_time,
+                next_run,
             )
         logger.info(
             "Scheduler starting. Timezone: %s. Jobs: %d.",

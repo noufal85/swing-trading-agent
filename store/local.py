@@ -6,8 +6,12 @@ This is the default store for local development and testing.
 
 from __future__ import annotations
 
+import fcntl
 import json
 import logging
+import os
+import tempfile
+from contextlib import contextmanager
 from pathlib import Path
 from typing import Any
 
@@ -18,17 +22,41 @@ logger = logging.getLogger(__name__)
 SESSIONS_DIR = Path("backtest/sessions")
 
 
+@contextmanager
+def _lock(path: Path):
+    """Exclusive advisory lock for the duration of a write, shared for reads."""
+    lock_path = path.with_suffix(path.suffix + ".lock")
+    lock_path.parent.mkdir(parents=True, exist_ok=True)
+    with open(lock_path, "w") as lf:
+        fcntl.flock(lf, fcntl.LOCK_EX)
+        try:
+            yield
+        finally:
+            fcntl.flock(lf, fcntl.LOCK_UN)
+
+
 def _save_json(path: Path, data: Any) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
-    with open(path, "w") as f:
-        json.dump(data, f, indent=2, default=str)
+    with _lock(path):
+        fd, tmp = tempfile.mkstemp(dir=path.parent, suffix=".tmp")
+        try:
+            with os.fdopen(fd, "w") as f:
+                json.dump(data, f, indent=2, default=str)
+            os.replace(tmp, path)
+        except Exception:
+            try:
+                os.unlink(tmp)
+            except OSError:
+                pass
+            raise
 
 
 def _load_json(path: Path) -> Any | None:
     if not path.exists():
         return None
-    with open(path) as f:
-        return json.load(f)
+    with _lock(path):
+        with open(path) as f:
+            return json.load(f)
 
 
 class LocalStore(SessionStore):

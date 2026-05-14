@@ -104,6 +104,9 @@ def parse_args() -> argparse.Namespace:
 # Run modes
 # ---------------------------------------------------------------------------
 
+_spy_cache: dict[str, float | None] = {}
+
+
 class PersistingOrchestrator:
     """Wraps PortfolioAgent to persist cycle results to SessionStore."""
 
@@ -116,15 +119,16 @@ class PersistingOrchestrator:
     def _record_daily_stats(self, today: str) -> None:
         """Record end-of-day stats and persist to store."""
         try:
-            spy_close = None
-            try:
-                import yfinance as yf
-                spy = yf.Ticker("SPY")
-                hist = spy.history(period="2d")
-                if not hist.empty:
-                    spy_close = float(hist["Close"].iloc[-1])
-            except Exception:
-                logger.debug("Could not fetch SPY close for daily stats")
+            if today not in _spy_cache:
+                try:
+                    import yfinance as yf
+                    spy = yf.Ticker("SPY")
+                    hist = spy.history(period="2d")
+                    _spy_cache[today] = float(hist["Close"].iloc[-1]) if not hist.empty else None
+                except Exception:
+                    logger.debug("Could not fetch SPY close for daily stats")
+                    _spy_cache[today] = None
+            spy_close = _spy_cache[today]
 
             self.state.record_daily_stats(
                 date=today,
@@ -247,32 +251,33 @@ def run_scheduler(settings, orchestrator, portfolio_state, session_id: str | Non
     scheduler.start()
 
 
-def run_single_cycle(settings, cycle_type: str) -> None:
-    """Execute a single cycle synchronously and print the result as JSON.
+def _build_agent(settings):
+    """Initialise AgentState + PortfolioAgent and return (agent, state).
 
-    All cycles are run via PortfolioAgent (research runs inline).
-
-    Args:
-        settings: Application settings.
-        cycle_type: One of MORNING, INTRADAY, EOD_SIGNAL.
+    Shared by run_single_cycle and the scheduler branch in main().
+    cloud/main.py duplicates this logic for its own hot-reload bootstrap;
+    keep both in sync when changing the init sequence.
     """
     state = AgentState(state_file=settings.state_file_path)
     state.load()
     set_state(state)
-
     try:
         from agents.portfolio_agent import PortfolioAgent
-        orchestrator = PortfolioAgent(settings=settings, portfolio_state=state)
-        logger.info("Running %s trading cycle (PortfolioAgent).", cycle_type)
-        result = orchestrator.run_trading_cycle(cycle_type)
     except ImportError as exc:
         print(
-            f"ERROR: Could not import agent for {cycle_type}: {exc}\n"
+            f"ERROR: Could not import agents: {exc}\n"
             "Ensure 'strands-agents' is installed: pip install strands-agents",
             file=sys.stderr,
         )
         sys.exit(1)
+    return PortfolioAgent(settings=settings, portfolio_state=state), state
 
+
+def run_single_cycle(settings, cycle_type: str) -> None:
+    """Execute a single cycle synchronously and print the result as JSON."""
+    orchestrator, _ = _build_agent(settings)
+    logger.info("Running %s trading cycle (PortfolioAgent).", cycle_type)
+    result = orchestrator.run_trading_cycle(cycle_type)
     print(json.dumps(result, indent=2, default=str))
 
 
@@ -290,12 +295,13 @@ def main() -> None:
     log_settings = SimpleNamespace(log_level=effective_log_level)
     setup_logging(log_settings)
 
-    # If --paper flag passed, warn if settings already has paper=False
+    # --paper flag always forces paper mode regardless of env var
     if args.paper and not settings.alpaca_paper:
         logger.warning(
-            "--paper flag passed but ALPACA_PAPER env var is False. "
-            "Paper mode enforced by flag."
+            "--paper flag passed but ALPACA_PAPER=false in env — overriding to paper mode."
         )
+    if args.paper:
+        settings.alpaca_paper = True
 
     # Resolve cycle: --once is a deprecated alias for --cycle EOD
     cycle_type = args.cycle
@@ -313,21 +319,7 @@ def main() -> None:
     if cycle_type:
         run_single_cycle(settings, cycle_type)
     else:
-        state = AgentState(state_file=settings.state_file_path)
-        state.load()
-        set_state(state)
-
-        try:
-            from agents.portfolio_agent import PortfolioAgent
-        except ImportError as exc:
-            print(
-                f"ERROR: Could not import agents: {exc}\n"
-                "Ensure 'strands-agents' is installed: pip install strands-agents",
-                file=sys.stderr,
-            )
-            sys.exit(1)
-
-        orchestrator = PortfolioAgent(settings=settings, portfolio_state=state)
+        orchestrator, state = _build_agent(settings)
         run_scheduler(settings, orchestrator, state, session_id=args.session)
 
 

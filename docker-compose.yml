@@ -1,0 +1,52 @@
+services:
+
+  # ── Trading agent scheduler ─────────────────────────────────────────────
+  agent:
+    build:
+      context: .
+      dockerfile: Dockerfile.local
+    env_file: .env
+    command: python main.py --paper --session paper-local
+    volumes:
+      - ./state:/app/state
+      - ./backtest/sessions:/app/backtest/sessions
+      - ./backtest/fixtures:/app/backtest/fixtures
+      - ./.cache:/app/.cache
+      - ./playbook:/app/playbook
+    restart: unless-stopped
+    depends_on:
+      - api
+    profiles:
+      - trading   # only starts with: docker compose --profile trading up
+
+  # ── FastAPI backend ──────────────────────────────────────────────────────
+  api:
+    build:
+      context: .
+      dockerfile: Dockerfile.local
+    env_file: .env
+    command: uvicorn api.server:app --host 0.0.0.0 --port 8000 --reload
+    ports:
+      - "8000:8000"
+    volumes:
+      - ./state:/app/state
+      - ./backtest/sessions:/app/backtest/sessions
+      - ./backtest/fixtures:/app/backtest/fixtures
+      - ./.cache:/app/.cache
+      - ./playbook:/app/playbook
+      - ./api:/app/api
+      - ./agents:/app/agents
+      - ./tools:/app/tools
+      - ./store:/app/store
+    restart: unless-stopped
+
+  # ── React frontend ───────────────────────────────────────────────────────
+  frontend:
+    build:
+      context: ./frontend
+      dockerfile: Dockerfile.frontend
+    ports:
+      - "5173:5173"
+    depends_on:
+      - api
+    restart: unless-stopped
