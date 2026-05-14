@@ -10,6 +10,9 @@ strands-agents>=1.29.0
 boto3>=1.42.0
 botocore>=1.42.0
 
+# --- Anthropic API direct (MODEL_PROVIDER=anthropic, no AWS required) --------
+anthropic>=0.21.0
+
 # --- Broker: Alpaca Markets --------------------------------------------------
 alpaca-py>=0.43.0
 

@@ -69,6 +69,9 @@ class ResearchAnalystAgent(BaseAgent):
         """Research agent uses Haiku 4.5 regardless of PM model setting."""
         if self._bedrock_model is not None:
             return self._bedrock_model
+        if self.settings.model_provider == "anthropic":
+            self._bedrock_model = self._build_anthropic_model(self._RESEARCH_MODEL_ID)
+            return self._bedrock_model
         from strands.models.bedrock import BedrockModel
         from botocore.config import Config as BotocoreConfig
         self._bedrock_model = BedrockModel(

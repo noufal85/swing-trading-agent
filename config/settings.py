@@ -38,6 +38,15 @@ class Settings(BaseSettings):
     )
 
     # -------------------------------------------------------------------------
+    # Model provider — swap LLM backend without touching agent code
+    #   bedrock  : Strands BedrockModel via AWS Bedrock (requires AWS creds)
+    #   anthropic: Strands AnthropicModel via Anthropic API direct (no AWS)
+    # -------------------------------------------------------------------------
+    model_provider: Literal["bedrock", "anthropic"] = "bedrock"
+    anthropic_api_key: str = ""
+    anthropic_max_tokens: int = 8192
+
+    # -------------------------------------------------------------------------
     # AWS / Amazon Bedrock
     # -------------------------------------------------------------------------
     aws_region: str = "us-west-2"

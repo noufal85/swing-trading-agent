@@ -30,6 +30,25 @@ from config.settings import Settings
 logger = logging.getLogger(__name__)
 
 
+def _bedrock_to_anthropic_model_id(bedrock_id: str) -> str:
+    """Map a Bedrock inference-profile ID to its Anthropic API model ID.
+
+    Examples:
+        us.anthropic.claude-sonnet-4-5-20251001-v1:0 -> claude-sonnet-4-5-20251001
+        us.anthropic.claude-haiku-4-5-20251001-v1:0  -> claude-haiku-4-5-20251001
+    """
+    s = bedrock_id
+    for prefix in ("us.", "eu.", "apac.", "global."):
+        if s.startswith(prefix):
+            s = s[len(prefix):]
+            break
+    if s.startswith("anthropic."):
+        s = s[len("anthropic."):]
+    if s.endswith("-v1:0"):
+        s = s[: -len("-v1:0")]
+    return s
+
+
 class BaseAgent(ABC):
     """
     Abstract base class for all trading system agents.
@@ -74,14 +93,21 @@ class BaseAgent(ABC):
         """
         self._agent = self._build_agent()
 
-    def _get_boto_model(self) -> BedrockModel:
-        """Return a BedrockModel, reusing the cached boto client if available."""
+    def _get_boto_model(self) -> Any:
+        """Return the configured Strands model, cached. Bedrock or Anthropic."""
         if self._bedrock_model is not None:
             return self._bedrock_model
+        if self.settings.model_provider == "anthropic":
+            self._bedrock_model = self._build_anthropic_model(self.settings.bedrock_model_id)
+        else:
+            self._bedrock_model = self._build_bedrock_model(self.settings.bedrock_model_id)
+        return self._bedrock_model
 
+    def _build_bedrock_model(self, model_id: str) -> BedrockModel:
+        """Construct a fresh BedrockModel for the given model_id."""
         additional_request_fields = self._build_thinking_config()
-        self._bedrock_model = BedrockModel(
-            model_id=self.settings.bedrock_model_id,
+        return BedrockModel(
+            model_id=model_id,
             region_name=self.settings.aws_region,
             temperature=self.settings.bedrock_temperature,
             cache_config=CacheConfig(strategy="auto"),
@@ -92,7 +118,30 @@ class BaseAgent(ABC):
             ),
             **({"additional_request_fields": additional_request_fields} if additional_request_fields else {}),
         )
-        return self._bedrock_model
+
+    def _build_anthropic_model(self, bedrock_model_id: str) -> Any:
+        """Construct an AnthropicModel using the Anthropic API directly."""
+        if not self.settings.anthropic_api_key:
+            raise RuntimeError(
+                "MODEL_PROVIDER=anthropic but ANTHROPIC_API_KEY is empty. "
+                "Set ANTHROPIC_API_KEY in your .env or switch MODEL_PROVIDER=bedrock."
+            )
+        try:
+            from strands.models.anthropic import AnthropicModel
+        except ImportError as exc:
+            raise RuntimeError(
+                "MODEL_PROVIDER=anthropic requires the 'anthropic' package. "
+                "Install with: pip install anthropic"
+            ) from exc
+
+        api_model_id = _bedrock_to_anthropic_model_id(bedrock_model_id)
+        logger.info("Using Anthropic API (model=%s)", api_model_id)
+        return AnthropicModel(
+            client_args={"api_key": self.settings.anthropic_api_key},
+            model_id=api_model_id,
+            max_tokens=self.settings.anthropic_max_tokens,
+            params={"temperature": self.settings.bedrock_temperature},
+        )
 
     def _build_agent(self) -> Any:
         """
