@@ -34,7 +34,7 @@ def _bedrock_to_anthropic_model_id(bedrock_id: str) -> str:
     """Map a Bedrock inference-profile ID to its Anthropic API model ID.
 
     Examples:
-        us.anthropic.claude-sonnet-4-5-20251001-v1:0 -> claude-sonnet-4-5-20251001
+        us.anthropic.claude-sonnet-4-6-v1:0         -> claude-sonnet-4-6
         us.anthropic.claude-haiku-4-5-20251001-v1:0  -> claude-haiku-4-5-20251001
     """
     s = bedrock_id
@@ -47,6 +47,42 @@ def _bedrock_to_anthropic_model_id(bedrock_id: str) -> str:
     if s.endswith("-v1:0"):
         s = s[: -len("-v1:0")]
     return s
+
+
+def validate_anthropic_model_id(api_key: str, bedrock_model_id: str) -> None:
+    """Probe the Anthropic API to confirm the derived model ID is valid.
+
+    Uses count_tokens (non-billable) as a cheap startup check so the
+    process fails immediately with a clear error rather than crashing
+    mid-cycle with a cryptic 404.
+
+    Non-404 errors (network, auth) are logged as warnings — they should
+    not prevent startup since they may be transient.
+    """
+    api_model_id = _bedrock_to_anthropic_model_id(bedrock_model_id)
+    try:
+        import anthropic
+        client = anthropic.Anthropic(api_key=api_key)
+        client.messages.count_tokens(
+            model=api_model_id,
+            messages=[{"role": "user", "content": "ping"}],
+        )
+        logger.info("Model validation OK: %s", api_model_id)
+    except Exception as exc:
+        exc_str = str(exc)
+        if "404" in exc_str or "not_found" in exc_str.lower():
+            raise RuntimeError(
+                f"Anthropic model '{api_model_id}' not found on the Anthropic API. "
+                f"(Derived from BEDROCK_MODEL_ID='{bedrock_model_id}'.) "
+                f"Update BEDROCK_MODEL_ID in .env — valid examples: "
+                f"us.anthropic.claude-sonnet-4-6-v1:0, "
+                f"us.anthropic.claude-haiku-4-5-20251001-v1:0"
+            ) from exc
+        logger.warning(
+            "Model validation probe failed (%s) — proceeding anyway. "
+            "If the model ID is wrong, the first cycle will crash.",
+            exc,
+        )
 
 
 class BaseAgent(ABC):

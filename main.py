@@ -316,6 +316,15 @@ def main() -> None:
         settings.alpaca_paper or args.paper,
     )
 
+    # Fail fast if the Anthropic model ID is wrong — better than a mid-cycle 404.
+    if settings.model_provider == "anthropic":
+        from agents.base_agent import validate_anthropic_model_id
+        try:
+            validate_anthropic_model_id(settings.anthropic_api_key, settings.bedrock_model_id)
+        except RuntimeError as exc:
+            logger.error("Startup aborted: %s", exc)
+            sys.exit(1)
+
     if cycle_type:
         run_single_cycle(settings, cycle_type)
     else:
