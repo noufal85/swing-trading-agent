@@ -447,10 +447,27 @@ class AgentState(PortfolioState):
         spy_close: float | None = None,
         regime: str = "",
         events: list[dict] | None = None,
-        start_cash: float = 100_000.0,
+        start_cash: float | None = None,
     ) -> None:
-        """Record end-of-day performance summary."""
+        """Record end-of-day performance summary.
+
+        ``start_cash`` defines the baseline used for cumulative-return and
+        drawdown on the *first* daily_stats record (when no prev exists).
+        Backtest callers pass an explicit seed; live callers should leave
+        it as ``None`` so we derive the baseline from ``self.peak_value``
+        (which portfolio_sync hydrates from the live account) — otherwise
+        drawdown becomes nonsense for accounts seeded with anything other
+        than the legacy $100k default.
+        """
         prev = self.daily_stats[-1] if self.daily_stats else None
+
+        # Choose a baseline: explicit start_cash > tracked peak_value >
+        # today's portfolio_value (last-resort, gives a 0% first-day return).
+        if start_cash is None:
+            if self.peak_value > 0:
+                start_cash = self.peak_value
+            else:
+                start_cash = portfolio_value
 
         # Portfolio returns
         prev_pv = prev["portfolio_value"] if prev else start_cash

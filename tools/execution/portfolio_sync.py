@@ -140,18 +140,43 @@ def sync_positions_from_alpaca(existing_positions=None) -> dict:
         # --- Detect closed positions (in local state but not in Alpaca) ---
 
         newly_closed = []
+        from tools.execution.alpaca_orders import get_last_sell_fill
         for symbol in list(portfolio.positions.keys()):
             if symbol not in alpaca_symbols:
                 if symbol in pending_buy_symbols:
                     logger.info("portfolio_sync: %s not in Alpaca positions but has pending buy — keeping", symbol)
                     continue
                 local_pos = portfolio.positions[symbol]
-                exit_price = (
-                    local_pos.current_price
-                    if local_pos.current_price > 0
-                    else local_pos.avg_entry_price
+                # Try to recover the actual sell fill from Alpaca (covers
+                # stop-loss / take-profit fills that closed the position
+                # without our exit code path running). Falls back to the
+                # last seen price only if Alpaca lookup yields nothing.
+                fill_reason = ''
+                fill_qty = local_pos.qty
+                fill_source = 'fallback'
+                fill_info = get_last_sell_fill(
+                    symbol, bracket_parent_id=local_pos.bracket_order_id or None,
                 )
-                realized_pnl = (exit_price - local_pos.avg_entry_price) * local_pos.qty
+                if fill_info and fill_info.get('fill_price'):
+                    exit_price = float(fill_info['fill_price'])
+                    fill_qty = int(fill_info.get('fill_qty') or local_pos.qty)
+                    fill_reason = fill_info.get('reason', '')
+                    fill_source = fill_info.get('source', 'alpaca')
+                    logger.info(
+                        "portfolio_sync: %s closed via %s — fill @ $%.4f x%d (source=%s)",
+                        symbol, fill_reason or 'sell', exit_price, fill_qty, fill_source,
+                    )
+                else:
+                    exit_price = (
+                        local_pos.current_price
+                        if local_pos.current_price > 0
+                        else local_pos.avg_entry_price
+                    )
+                    logger.warning(
+                        "portfolio_sync: %s closed but no Alpaca fill found — "
+                        "using local last-price estimate $%.4f", symbol, exit_price,
+                    )
+                realized_pnl = (exit_price - local_pos.avg_entry_price) * fill_qty
                 holding_days = 0
                 if local_pos.entry_date:
                     try:
@@ -161,14 +186,20 @@ def sync_positions_from_alpaca(existing_positions=None) -> dict:
                         holding_days = (datetime.now(timezone.utc).date() - entry_dt).days
                     except (ValueError, TypeError):
                         pass
+                trade_strategy = local_pos.strategy or 'UNKNOWN'
+                if fill_reason and fill_reason != 'SOLD':
+                    trade_strategy = f"{trade_strategy}:{fill_reason}" if local_pos.strategy else fill_reason
                 trade = Trade(
                     symbol=symbol,
                     side='sell',
-                    qty=local_pos.qty,
+                    qty=fill_qty,
                     price=exit_price,
                     pnl=realized_pnl,
-                    timestamp=datetime.now(timezone.utc).isoformat().replace('+00:00', 'Z'),
-                    strategy=local_pos.strategy or 'STOP_LOSS',
+                    timestamp=(
+                        fill_info.get('filled_at') if fill_info and fill_info.get('filled_at')
+                        else datetime.now(timezone.utc).isoformat().replace('+00:00', 'Z')
+                    ),
+                    strategy=trade_strategy,
                     entry_price=local_pos.avg_entry_price,
                     holding_days=holding_days,
                 )
@@ -176,12 +207,14 @@ def sync_positions_from_alpaca(existing_positions=None) -> dict:
                 del portfolio.positions[symbol]
                 newly_closed.append({
                     'symbol': symbol,
-                    'qty': local_pos.qty,
+                    'qty': fill_qty,
                     'avg_entry_price': local_pos.avg_entry_price,
                     'exit_price': exit_price,
                     'realized_pnl': round(realized_pnl, 2),
                     'entry_date': local_pos.entry_date or '',
-                    'strategy': local_pos.strategy or 'STOP_LOSS',
+                    'strategy': local_pos.strategy or '',
+                    'reason': fill_reason,
+                    'fill_source': fill_source,
                     'holding_days': holding_days,
                 })
 
@@ -234,6 +267,17 @@ def sync_positions_from_alpaca(existing_positions=None) -> dict:
                 local.current_price = current_price
                 local.unrealized_pnl = unrealized_pl
                 local.qty = qty
+                # Reconcile entry price from Alpaca — it's the authoritative
+                # weighted average across partial fills. Local state is often
+                # seeded with the planned signal price before fills land.
+                if avg_entry > 0 and abs(local.avg_entry_price - avg_entry) > 0.01:
+                    logger.info(
+                        "portfolio_sync: %s avg_entry_price reconciled %.4f → %.4f",
+                        ap.symbol, local.avg_entry_price, avg_entry,
+                    )
+                    local.avg_entry_price = avg_entry
+                    if local.entry_qty <= 0:
+                        local.entry_qty = qty
             else:
                 stop_price = bracket_stop_map.get(ap.symbol, 0.0)
                 entry_date = bracket_entry_date_map.get(ap.symbol, '')

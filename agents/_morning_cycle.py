@@ -716,14 +716,20 @@ class MorningCycleMixin:
                     # overwriting strategy/entry_conditions/signal_price/etc.
                     ticker = order['symbol']
                     if ticker not in self.portfolio_state.positions:
+                        # Prefer the realised fill price from the broker (live mode
+                        # polls Alpaca briefly after submit). Fall back to the
+                        # planned price for limits or for not-yet-filled markets.
+                        fill_price = result.get('fill_price')
+                        fill_qty = result.get('fill_qty') or order['qty']
                         est_price = (
-                            order.get('limit_price')
+                            fill_price
+                            or order.get('limit_price')
                             or order.get('signal_price', 0.0)
                             or 0.0
                         )
                         self.portfolio_state.positions[ticker] = Position(
                             symbol=ticker,
-                            qty=order['qty'],
+                            qty=fill_qty if fill_price else order['qty'],
                             avg_entry_price=est_price,
                             current_price=est_price,
                             stop_loss_price=order['stop_loss_price'],

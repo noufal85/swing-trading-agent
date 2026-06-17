@@ -89,8 +89,13 @@ class AlpacaBroker(Broker):
 
         Uses 'gtc' TIF for bracket orders so stop-loss legs persist
         across trading sessions (swing trading requires overnight protection).
+
+        For market entries we briefly poll for the parent fill so callers
+        receive the realised fill price (``fill_price`` / ``fill_qty``).
+        Limit/stop_limit orders are not polled — they may rest unfilled and
+        will be reconciled by the next ``sync()`` instead.
         """
-        from tools.execution.alpaca_orders import place_bracket_order
+        from tools.execution.alpaca_orders import place_bracket_order, poll_order_fill
         order_type = entry_type.lower()
         result = place_bracket_order(
             symbol=ticker,
@@ -102,6 +107,33 @@ class AlpacaBroker(Broker):
             limit_price=limit_price,
             time_in_force='gtc',
         )
+
+        if (
+            result
+            and not result.get('error')
+            and result.get('order_id')
+            and order_type == 'market'
+        ):
+            fill_info = poll_order_fill(
+                result['order_id'], max_attempts=5, delay=1.0,
+            )
+            if fill_info.get('filled'):
+                result['fill_price'] = fill_info['filled_avg_price']
+                result['fill_qty'] = fill_info.get('filled_qty', shares)
+                result['filled_at'] = fill_info.get('filled_at')
+                logger.info(
+                    "AlpacaBroker.submit_entry: %s filled @ $%.2f x%d",
+                    ticker, fill_info['filled_avg_price'],
+                    fill_info.get('filled_qty', shares),
+                )
+            else:
+                # Not filled within poll window — Alpaca sync will reconcile
+                # avg_entry_price on the next cycle.
+                logger.info(
+                    "AlpacaBroker.submit_entry: %s not filled within poll window — "
+                    "will reconcile at next sync()", ticker,
+                )
+
         return result
 
     def execute_exit(

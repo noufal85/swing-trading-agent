@@ -515,6 +515,121 @@ def poll_order_fill(order_id: str, max_attempts: int = 5, delay: float = 1.0) ->
     return {'order_id': order_id, 'filled': False, 'status': 'pending'}
 
 
+def get_last_sell_fill(symbol: str, bracket_parent_id: str | None = None) -> dict | None:
+    """Find the most recent SELL fill for ``symbol`` — used to reconcile
+    positions that closed via Alpaca (stop-loss or take-profit) without
+    the app's exit code path running.
+
+    Strategy:
+      1. If ``bracket_parent_id`` is supplied, inspect its child legs and
+         return whichever SELL leg is ``filled`` (stop or take_profit).
+      2. Otherwise, scan ``/v2/account/activities?activity_types=FILL`` and
+         return the most recent SELL fill for the symbol (aggregating any
+         partial fills sharing one order_id).
+
+    Returns ``None`` if no SELL fill can be found.
+    """
+    if not _ALPACA_AVAILABLE:
+        return None
+    try:
+        client = _get_trading_client()
+
+        # Strategy 1: bracket legs
+        if bracket_parent_id:
+            try:
+                parent = client.get_order_by_id(bracket_parent_id)
+                legs = getattr(parent, 'legs', None) or []
+                for leg in legs:
+                    leg_side = str(getattr(leg, 'side', '')).lower()
+                    leg_status = str(getattr(leg, 'status', '')).lower()
+                    if leg_side == 'sell' and leg_status == 'filled':
+                        fap = getattr(leg, 'filled_avg_price', None)
+                        if fap is None:
+                            continue
+                        leg_type = str(getattr(leg, 'type', '')).lower()
+                        return {
+                            'symbol': symbol,
+                            'fill_price': float(fap),
+                            'fill_qty': int(getattr(leg, 'filled_qty', 0) or 0),
+                            'filled_at': (
+                                leg.filled_at.isoformat()
+                                if getattr(leg, 'filled_at', None) else None
+                            ),
+                            'reason': 'STOP_LOSS' if leg_type in ('stop', 'stop_limit') else 'TAKE_PROFIT',
+                            'source': 'bracket_leg',
+                        }
+            except Exception as exc:
+                logger.debug("get_last_sell_fill: bracket lookup failed for %s: %s",
+                             symbol, exc)
+
+        # Strategy 2: activities API — most recent SELL fill for symbol
+        from alpaca.broker.requests import GetAccountActivitiesRequest  # type: ignore
+        # Fall through to REST call (SDK signature varies between versions);
+        # use a simple HTTP request as a portable fallback.
+        raise ImportError  # force fallback below
+    except ImportError:
+        pass
+    except Exception as exc:
+        logger.debug("get_last_sell_fill: SDK path failed for %s: %s", symbol, exc)
+
+    # REST fallback for activities API
+    try:
+        import os
+        import requests
+        from config.settings import get_settings
+        s = get_settings()
+        base = s.alpaca_base_url
+        headers = {
+            'APCA-API-KEY-ID': s.alpaca_api_key,
+            'APCA-API-SECRET-KEY': s.alpaca_secret_key,
+        }
+        resp = requests.get(
+            f'{base}/v2/account/activities',
+            headers=headers,
+            params={'activity_types': 'FILL', 'direction': 'desc'},
+            timeout=15,
+        )
+        if resp.status_code != 200:
+            return None
+        # Aggregate by order_id (partial fills share an order_id)
+        agg: dict[str, dict] = {}
+        for a in resp.json():
+            if a.get('symbol') != symbol or a.get('side') != 'sell':
+                continue
+            oid = a.get('order_id', '')
+            qty = int(a.get('qty', 0) or 0)
+            price = float(a.get('price', 0) or 0)
+            entry = agg.setdefault(oid, {
+                'total_qty': 0,
+                'notional': 0.0,
+                'latest_time': a.get('transaction_time', ''),
+            })
+            entry['total_qty'] += qty
+            entry['notional'] += qty * price
+            tt = a.get('transaction_time', '')
+            if tt > entry['latest_time']:
+                entry['latest_time'] = tt
+        if not agg:
+            return None
+        # Pick most recent order_id by latest_time
+        oid, entry = max(agg.items(), key=lambda kv: kv[1]['latest_time'])
+        if entry['total_qty'] <= 0:
+            return None
+        return {
+            'symbol': symbol,
+            'fill_price': round(entry['notional'] / entry['total_qty'], 4),
+            'fill_qty': entry['total_qty'],
+            'filled_at': entry['latest_time'],
+            'reason': 'SOLD',
+            'source': 'activities',
+            'order_id': oid,
+        }
+    except Exception as exc:
+        logger.debug("get_last_sell_fill: activities fallback failed for %s: %s",
+                     symbol, exc)
+        return None
+
+
 def get_order_fill(order_id: str) -> dict | None:
     """Fetch fill details for a single order (no retry/polling).
 
