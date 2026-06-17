@@ -137,6 +137,17 @@ class EODCycleMixin:
             for sym in list(self.portfolio_state.positions.keys()):
                 if sym not in synced_syms:
                     del self.portfolio_state.positions[sym]
+        elif self.portfolio_state.positions:
+            # Broker holds zero positions (a *successful* sync — failures
+            # return early above), so any local positions are phantoms left
+            # behind when a stop/take-profit closed them broker-side. Clear
+            # them; otherwise the in-memory state re-saves them every cycle.
+            logger.info(
+                "EOD_SIGNAL: broker has 0 positions — clearing %d local phantom(s): %s",
+                len(self.portfolio_state.positions),
+                list(self.portfolio_state.positions.keys()),
+            )
+            self.portfolio_state.positions.clear()
 
         existing_positions = self.portfolio_state.positions  # {ticker: Position}
 

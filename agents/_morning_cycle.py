@@ -167,6 +167,15 @@ class MorningCycleMixin:
             for sym in list(self.portfolio_state.positions.keys()):
                 if sym not in synced_syms:
                     del self.portfolio_state.positions[sym]
+        elif self.portfolio_state.positions:
+            # Broker holds zero positions (successful sync) — clear local
+            # phantoms left behind by broker-side stop/take-profit closes.
+            logger.info(
+                "MORNING: broker has 0 positions — clearing %d local phantom(s): %s",
+                len(self.portfolio_state.positions),
+                list(self.portfolio_state.positions.keys()),
+            )
+            self.portfolio_state.positions.clear()
 
         # ── Step 3: Overnight research (inline, stateless) ─────────────────
         researcher = self._get_researcher()
