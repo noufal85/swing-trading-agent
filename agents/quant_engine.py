@@ -48,28 +48,40 @@ def _json_safe(obj: object) -> object:
 
 
 
-def _classify_strategy(ctx: dict) -> str | None:
+def _classify_strategy(ctx: dict) -> tuple[str | None, bool]:
     """Classify a candidate as MOMENTUM, MEAN_REVERSION, or None (excluded).
 
-    Multi-factor confirmation prevents weak setups from being force-classified:
-      MOM:  mom_z > 0.5 (cross-sectional momentum already captures trend strength)
-      MR:   price < 20MA AND mr_z < -1.0
-      Both: MOM takes priority (momentum present despite oversold reading)
-      None: doesn't qualify for either — excluded from candidate pool.
+    Returns ``(strategy, is_weak)``. A *weak* classification clears a softer
+    threshold: instead of being silently dropped, a borderline setup reaches
+    the PM flagged ``weak`` so the LLM — already instructed to be selective —
+    makes the call rather than code removing it. This widens the candidate
+    pool in quiet / TRANSITIONAL tapes where few names clear the strong
+    thresholds. Genuinely-nothing names (no momentum, not oversold) are still
+    excluded so the LLM is not flooded with noise.
+
+    Thresholds (strong tier first, MOM prioritised over MR at each tier):
+      Strong MOM:  mom_z > 0.5  (top ~30% cross-sectional momentum)
+      Strong MR:   price < 20MA AND mr_z < -1.0  (1σ oversold)
+      Weak MOM:    mom_z > 0.0  (positive but sub-threshold momentum)
+      Weak MR:     price < 20MA AND mr_z < -0.5
+      None:        no momentum and not oversold — excluded from the pool.
     """
     mom_z = ctx.get('momentum_zscore', 0.0)
     mr_z = ctx.get('mean_reversion_zscore', 0.0)
     vs_20ma = ctx.get('price_vs_20ma_pct', 0.0)
+    below_20ma = vs_20ma is not None and vs_20ma < 0
 
-    # MOM: meaningful cross-sectional momentum (top ~30% of universe)
+    # Strong tiers first (MOM takes priority), then weak tiers.
     if mom_z > 0.5:
-        return 'MOMENTUM'
+        return 'MOMENTUM', False
+    if below_20ma and mr_z < -1.0:
+        return 'MEAN_REVERSION', False
+    if mom_z > 0.0:
+        return 'MOMENTUM', True
+    if below_20ma and mr_z < -0.5:
+        return 'MEAN_REVERSION', True
 
-    # MR: below 20MA + meaningfully oversold (1σ below mean)
-    if vs_20ma is not None and vs_20ma < 0 and mr_z < -1.0:
-        return 'MEAN_REVERSION'
-
-    return None
+    return None, False
 
 
 def _get_sector_map() -> dict[str, str]:
@@ -1312,13 +1324,18 @@ class QuantEngine:
         }.get(regime)
 
         excluded: list[str] = []
+        n_pool = len(candidate_ctx)
+        n_weak = 0
         for ticker, ctx in list(candidate_ctx.items()):
-            ticker_strategy = _classify_strategy(ctx)
+            ticker_strategy, is_weak = _classify_strategy(ctx)
             if ticker_strategy is None:
                 excluded.append(ticker)
                 continue
             ctx['strategy'] = ticker_strategy
+            ctx['weak_setup'] = is_weak
             ctx['regime_aligned'] = (regime_strategy == ticker_strategy) if regime_strategy else False
+            if is_weak:
+                n_weak += 1
 
         # Remove excluded candidates (no man's land — neither MOM nor MR)
         # Protected (watchlist) tickers are also dropped if they no longer
@@ -1332,6 +1349,11 @@ class QuantEngine:
                             len(dropped_protected), ', '.join(sorted(dropped_protected)))
             logger.info('QuantEngine: excluded %d candidates (no clear strategy): %s',
                         len(excluded), ', '.join(sorted(excluded)))
+        # Funnel diagnostic (always logged): pre-classification pool → survivors.
+        logger.info(
+            'QuantEngine: classify funnel — %d candidates → %d classified (%d weak) + %d excluded (cap=%d to LLM).',
+            n_pool, len(candidate_ctx), n_weak, len(excluded), max_to_llm,
+        )
 
         if len(candidate_ctx) <= max_to_llm:
             return candidate_ctx

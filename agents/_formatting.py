@@ -305,6 +305,9 @@ def _format_candidate_group(candidates: dict, strategy: str = 'MOM') -> str:
             flag_strs.append(f'SEC!{sw:.0%}')
         if ctx.get('corr_heat_capped'):
             flag_strs.append('CORR!')
+        # Borderline setup surfaced (not silently dropped) — PM decides.
+        if ctx.get('weak_setup'):
+            flag_strs.append('weak')
         stage = (ctx.get('weekly') or {}).get('weinstein_stage') or '?'
         ticker_strategy = ctx.get('strategy', '?')
         strategy_short = 'MR' if ticker_strategy == 'MEAN_REVERSION' else 'MOM' if ticker_strategy == 'MOMENTUM' else '?'

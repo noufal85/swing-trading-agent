@@ -251,6 +251,13 @@ class EODCycleMixin:
             screened, signal_map = _multi_signal_screen(
                 volatile, bars, n=s.screener_momentum_candidates, return_signals=True,
             )
+            logger.info(
+                "EOD_SIGNAL: screen funnel — %d universe → %d liquid (vol>=%s) "
+                "→ %d in ATR band [%.0f%%-%.0f%%] → %d signal-fired (cap=%d).",
+                len(bars), len(liquid), format(s.screener_min_avg_volume, ","),
+                len(volatile), s.screener_min_atr_pct * 100, s.screener_max_atr_pct * 100,
+                len(screened), s.screener_momentum_candidates,
+            )
             # Exclude already-held positions
             candidates = [t for t in screened if t not in existing_positions]
             # Exclude recently exited tickers (re-entry cooldown)
