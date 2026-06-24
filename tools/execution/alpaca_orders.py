@@ -65,6 +65,20 @@ def _get_trading_client():
     )
 
 
+def _enum_val(x) -> str:
+    """Normalize an alpaca-py enum (or plain string) to its lowercase value.
+
+    alpaca-py order enums subclass ``(str, Enum)``, so ``str(OrderType.STOP)``
+    yields ``'OrderType.STOP'`` while ``.value`` is ``'stop'``. Comparing
+    ``str(enum).lower()`` against bare values (``'stop'``) therefore never
+    matches. Prefer ``.value`` when present; fall back to the raw value for
+    plain strings (mock broker / tests).
+    """
+    if x is None:
+        return ''
+    return str(getattr(x, 'value', x)).lower()
+
+
 def place_bracket_order(
     symbol: str,
     qty: int,
@@ -300,11 +314,11 @@ def modify_bracket_stop(parent_order_id: str, new_stop_price: float) -> dict:
         parent = client.get_order_by_id(parent_order_id)
         legs = getattr(parent, 'legs', None) or []
 
-        # Find the stop-loss leg (type == 'stop')
+        # Find the stop-loss leg (type == 'stop'). alpaca-py enums stringify as
+        # 'OrderType.STOP', so match on the normalized .value, not str(enum).
         stop_order = None
         for leg in legs:
-            leg_type = getattr(leg, 'type', None)
-            if leg_type and str(leg_type).lower() in ('stop', 'stop_limit'):
+            if _enum_val(getattr(leg, 'type', None)) in ('stop', 'stop_limit'):
                 stop_order = leg
                 break
 
@@ -320,7 +334,7 @@ def modify_bracket_stop(parent_order_id: str, new_stop_price: float) -> dict:
         stop_order_id = str(stop_order.id)
 
         # Check stop leg status — can only replace open/held orders
-        stop_status = str(getattr(stop_order, 'status', '')).lower()
+        stop_status = _enum_val(getattr(stop_order, 'status', None))
         if stop_status in ('filled', 'cancelled', 'expired', 'replaced'):
             return {
                 'parent_order_id': parent_order_id,
