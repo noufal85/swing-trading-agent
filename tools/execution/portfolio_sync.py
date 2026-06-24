@@ -10,6 +10,8 @@ from __future__ import annotations
 import logging
 from datetime import datetime, timezone
 
+from tools.execution.alpaca_orders import _enum_val
+
 
 logger = logging.getLogger(__name__)
 
@@ -131,7 +133,7 @@ def sync_positions_from_alpaca(existing_positions=None) -> dict:
                 filter=GetOrdersRequest(status=QueryOrderStatus.OPEN)
             )
             for o in all_open_orders:
-                side = str(getattr(o, 'side', '')).lower()
+                side = _enum_val(getattr(o, 'side', None))
                 if side == 'buy':
                     pending_buy_symbols.add(o.symbol)
         except Exception as exc:
@@ -234,7 +236,7 @@ def sync_positions_from_alpaca(existing_positions=None) -> dict:
                 for order in filled_orders:
                     sym = getattr(order, 'symbol', None)
                     order_class = getattr(order, 'order_class', None)
-                    if sym in new_symbols and str(order_class).lower() == 'bracket':
+                    if sym in new_symbols and _enum_val(order_class) == 'bracket':
                         if sym not in bracket_order_map:
                             bracket_order_map[sym] = str(order.id)
                             # Extract entry date from filled_at
@@ -245,7 +247,7 @@ def sync_positions_from_alpaca(existing_positions=None) -> dict:
                             legs = getattr(order, 'legs', None) or []
                             for leg in legs:
                                 leg_type = getattr(leg, 'type', None)
-                                if leg_type and str(leg_type).lower() in ('stop', 'stop_limit'):
+                                if _enum_val(leg_type) in ('stop', 'stop_limit'):
                                     stop_price = getattr(leg, 'stop_price', None)
                                     if stop_price is not None:
                                         bracket_stop_map[sym] = float(stop_price)
@@ -321,7 +323,7 @@ def sync_positions_from_alpaca(existing_positions=None) -> dict:
         try:
             symbols_with_stop = set()
             for o in all_open_orders:
-                otype = str(getattr(o, 'type', '')).lower()
+                otype = _enum_val(getattr(o, 'type', None))
                 if otype in ('stop', 'stop_limit'):
                     symbols_with_stop.add(o.symbol)
 

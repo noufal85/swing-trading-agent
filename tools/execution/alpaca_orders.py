@@ -554,13 +554,13 @@ def get_last_sell_fill(symbol: str, bracket_parent_id: str | None = None) -> dic
                 parent = client.get_order_by_id(bracket_parent_id)
                 legs = getattr(parent, 'legs', None) or []
                 for leg in legs:
-                    leg_side = str(getattr(leg, 'side', '')).lower()
-                    leg_status = str(getattr(leg, 'status', '')).lower()
+                    leg_side = _enum_val(getattr(leg, 'side', None))
+                    leg_status = _enum_val(getattr(leg, 'status', None))
                     if leg_side == 'sell' and leg_status == 'filled':
                         fap = getattr(leg, 'filled_avg_price', None)
                         if fap is None:
                             continue
-                        leg_type = str(getattr(leg, 'type', '')).lower()
+                        leg_type = _enum_val(getattr(leg, 'type', None))
                         return {
                             'symbol': symbol,
                             'fill_price': float(fap),
