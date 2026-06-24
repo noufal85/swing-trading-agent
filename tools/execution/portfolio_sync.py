@@ -16,6 +16,30 @@ from tools.execution.alpaca_orders import _enum_val
 logger = logging.getLogger(__name__)
 
 
+_STOP_LEG_TERMINAL = {'filled', 'canceled', 'cancelled', 'expired', 'rejected', 'replaced', 'done_for_day'}
+
+
+def _bracket_has_active_stop(client, bracket_order_id) -> bool:
+    """True if a bracket order still has a live (non-terminal) stop-loss leg.
+
+    Bracket stop legs sit in status 'held' and are NOT returned by
+    get_orders(status=OPEN), so the open-orders scan can't see them. Check the
+    parent bracket's legs directly to avoid placing a redundant standalone stop
+    (which Alpaca rejects for already-held qty).
+    """
+    if not bracket_order_id:
+        return False
+    try:
+        parent = client.get_order_by_id(bracket_order_id)
+        for leg in (getattr(parent, 'legs', None) or []):
+            if (_enum_val(getattr(leg, 'type', None)) in ('stop', 'stop_limit')
+                    and _enum_val(getattr(leg, 'status', None)) not in _STOP_LEG_TERMINAL):
+                return True
+    except Exception as exc:
+        logger.debug("portfolio_sync: bracket stop check failed for %s: %s", bracket_order_id, exc)
+    return False
+
+
 # ---------------------------------------------------------------------------
 # Alpaca import with graceful fallback
 # ---------------------------------------------------------------------------
@@ -329,6 +353,10 @@ def sync_positions_from_alpaca(existing_positions=None) -> dict:
 
             for sym, pos in portfolio.positions.items():
                 if pos.stop_loss_price > 0 and sym not in symbols_with_stop and sym in alpaca_symbols:
+                    # Bracket stop legs are 'held' and invisible to the OPEN-orders
+                    # scan above; skip redundant placement if the bracket protects it.
+                    if _bracket_has_active_stop(client, getattr(pos, 'bracket_order_id', None)):
+                        continue
                     try:
                         from alpaca.trading.requests import StopOrderRequest
                         stop_req = StopOrderRequest(

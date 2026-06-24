@@ -74,3 +74,34 @@ def test_modify_bracket_stop_finds_enum_stop_leg(monkeypatch):
     assert res['modified'] is True
     assert res['stop_order_id'] == 'sl1'
     assert client.replaced[0] == 'sl1'
+
+
+def test_bracket_has_active_stop():
+    # Held bracket stop legs are invisible to get_orders(status=OPEN), so
+    # portfolio_sync must detect them via the parent bracket's legs.
+    from tools.execution import portfolio_sync as ps
+
+    class Leg:
+        def __init__(self, t, s):
+            self.type, self.status = t, s
+
+    class Parent:
+        def __init__(self, legs):
+            self.legs = legs
+
+    class Client:
+        def __init__(self, parent):
+            self._p = parent
+        def get_order_by_id(self, oid):
+            return self._p
+
+    held = Client(Parent([Leg(FakeOrderType.LIMIT, FakeStatus.HELD),
+                          Leg(FakeOrderType.STOP, FakeStatus.HELD)]))
+    assert ps._bracket_has_active_stop(held, 'b1') is True            # active stop leg
+    assert ps._bracket_has_active_stop(held, None) is False           # no bracket id
+
+    filled = Client(Parent([Leg(FakeOrderType.STOP, FakeStatus.FILLED)]))
+    assert ps._bracket_has_active_stop(filled, 'b2') is False         # terminal status
+
+    no_stop = Client(Parent([Leg(FakeOrderType.LIMIT, FakeStatus.HELD)]))
+    assert ps._bracket_has_active_stop(no_stop, 'b3') is False        # no stop leg
