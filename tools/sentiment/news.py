@@ -154,30 +154,39 @@ def _detect_key_events(headlines: List[str]) -> List[str]:
     )
 
 
-def _fetch_yfinance_news(ticker: str, count: int = 20) -> list[dict]:
-    """Fetch recent news for a ticker via yfinance (free, no API key).
+_fmp_news_client = None
 
-    Returns articles normalised to a common format:
+
+def _get_fmp_news_client():
+    global _fmp_news_client
+    if _fmp_news_client is None:
+        from providers.fmp_client import FMPClient
+        _fmp_news_client = FMPClient()
+    return _fmp_news_client
+
+
+def _fetch_fmp_news(ticker: str, hours_back: int = 24) -> list[dict]:
+    """Fetch recent news for a ticker via FMP (live/paper trading).
+
+    Returns articles normalised to the common format:
         {title, published_utc, description, article_url, source}
+    Like the prior yfinance path, FMP carries no pre-computed sentiment — the
+    research LLM interprets the headlines. published_utc is emitted as tz-aware
+    ISO so the recency math in _score_articles doesn't mix naive/aware datetimes.
     """
-    import yfinance as yf
-
-    t = yf.Ticker(ticker)
-    raw_items = t.get_news(count=count) or []
-
+    days_back = max(1, (hours_back + 23) // 24)
+    by_ticker = _get_fmp_news_client().news([ticker], days_back=days_back)
     articles = []
-    for item in raw_items:
-        content = item.get('content') or item  # v2 wraps in 'content'
-        pub_date = content.get('pubDate', '') or content.get('published_utc', '')
-        provider = content.get('provider') or {}
-        summary = content.get('summary', '') or content.get('description', '') or ''
-
+    for a in by_ticker.get(ticker, []):
+        pub = (a.get('publishedDate') or '').replace(' ', 'T')
+        if pub and not pub.endswith('Z') and '+' not in pub:
+            pub = pub + 'Z'  # FMP timestamps are naive; mark UTC for fromisoformat
         articles.append({
-            'title': content.get('title', ''),
-            'published_utc': pub_date,
-            'description': summary,
-            'article_url': (content.get('canonicalUrl') or content.get('clickThroughUrl') or {}).get('url', ''),
-            'source': provider.get('displayName', ''),
+            'title': a.get('title', ''),
+            'published_utc': pub,
+            'description': a.get('text', ''),
+            'article_url': a.get('url', ''),
+            'source': a.get('site', ''),
         })
     return articles
 
@@ -373,7 +382,7 @@ def fetch_and_score_news(tickers: List[str], hours_back: int = 24, as_of: str = 
             if use_polygon:
                 articles = _fetch_polygon_news(ticker, hours_back, api_key, as_of=as_of_dt)
             else:
-                articles = _fetch_yfinance_news(ticker, count=20)
+                articles = _fetch_fmp_news(ticker, hours_back)
 
             _article_cache[ticker.upper()] = articles
             composite, veto, top_headline, key_events, raw_articles = _score_articles(

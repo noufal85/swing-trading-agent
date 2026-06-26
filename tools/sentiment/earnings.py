@@ -104,45 +104,51 @@ def _load_earnings_fixture() -> dict[str, list[dict]]:
     return _earnings_cache
 
 
-def _fetch_yfinance_earnings(ticker: str, n_entries: int = 12) -> list[dict]:
-    """Fetch earnings dates from yfinance (live API fallback).
+_fmp_earnings_client = None
+
+
+def _get_fmp_earnings_client():
+    global _fmp_earnings_client
+    if _fmp_earnings_client is None:
+        from providers.fmp_client import FMPClient
+        _fmp_earnings_client = FMPClient()
+    return _fmp_earnings_client
+
+
+def _fetch_fmp_earnings(ticker: str, n_entries: int = 12) -> list[dict]:
+    """Fetch earnings dates from FMP (live fallback when no fixture).
 
     Returns list of {date, eps_estimate, reported_eps, surprise_pct} dicts,
     newest first.
     """
     try:
-        import yfinance as yf
-
-        t = yf.Ticker(ticker)
-        ed = t.earnings_dates
-        if ed is None or ed.empty:
-            return []
-
+        rows = _get_fmp_earnings_client().earnings_history(ticker, limit=n_entries)
         result = []
-        for dt_idx, row in ed.head(n_entries).iterrows():
-            reported = row.get("Reported EPS")
-            surprise = row.get("Surprise(%)")
-            estimate = row.get("EPS Estimate")
+        for r in rows:
+            est = r.get("epsEstimated")
+            rep = r.get("eps")
+            surprise = None
+            if est not in (None, 0) and rep is not None:
+                surprise = round((rep - est) / abs(est) * 100, 2)
             result.append({
-                "date": dt_idx.date().isoformat(),
-                "eps_estimate": round(float(estimate), 2) if pd.notna(estimate) else None,
-                "reported_eps": round(float(reported), 2) if pd.notna(reported) else None,
-                "surprise_pct": round(float(surprise), 2) if pd.notna(surprise) else None,
+                "date": r["date"],
+                "eps_estimate": round(float(est), 2) if est is not None else None,
+                "reported_eps": round(float(rep), 2) if rep is not None else None,
+                "surprise_pct": surprise,
             })
         return result
-
     except Exception as exc:
         logger.debug("Failed to fetch earnings for %s: %s", ticker, exc)
         return []
 
 
 def _get_ticker_earnings(ticker: str) -> list[dict]:
-    """Get earnings entries for a ticker: fixture first, then yfinance."""
+    """Get earnings entries for a ticker: fixture first, then FMP."""
     fixture = _load_earnings_fixture()
     entries = fixture.get(ticker.upper())
     if entries is not None:
         return entries
-    entries = _fetch_yfinance_earnings(ticker)
+    entries = _fetch_fmp_earnings(ticker)
     time.sleep(0.2)
     return entries
 

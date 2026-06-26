@@ -6,6 +6,11 @@ services:
       context: .
       dockerfile: Dockerfile.local
     env_file: .env
+    environment:
+      THETADATA_HOST: host.docker.internal   # reach the shared ThetaData terminal on the host
+      THETADATA_PORT: "25503"
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
     command: python main.py --paper --session paper-local
     volumes:
       - ./state:/app/state
@@ -25,6 +30,11 @@ services:
       context: .
       dockerfile: Dockerfile.local
     env_file: .env
+    environment:
+      THETADATA_HOST: host.docker.internal   # reach the shared ThetaData terminal on the host
+      THETADATA_PORT: "25503"
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
     command: uvicorn api.server:app --host 0.0.0.0 --port 8000 --reload
     ports:
       - "8000:8000"

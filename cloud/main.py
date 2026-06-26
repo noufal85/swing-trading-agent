@@ -492,11 +492,10 @@ def _run_live_cycle_bg(session_id: str, params: InvocationInput, task_id: int):
         try:
             spy_close = None
             try:
-                import yfinance as yf
-                spy = yf.Ticker("SPY")
-                hist = spy.history(period="2d")
-                if not hist.empty:
-                    spy_close = float(hist["Close"].iloc[-1])
+                from providers.fmp_client import FMPClient
+                q = FMPClient().quote("SPY")
+                if q and q.get("price") is not None:
+                    spy_close = float(q["price"])
             except Exception as e:
                 logger.warning("Failed to fetch SPY close: %s", e)
             state.record_daily_stats(

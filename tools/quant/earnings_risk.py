@@ -140,17 +140,20 @@ def fetch_past_earnings_dates(ticker: str, n_quarters: int = 8) -> list[date]:
         if dates:
             return dates[:n_quarters]
 
-    # Fallback to live yfinance
+    # Fallback to live FMP (historical earnings; reported quarters have eps != None)
     try:
-        import yfinance as yf
+        from providers.fmp_client import FMPClient
 
-        t = yf.Ticker(ticker)
-        ed = t.earnings_dates
-        if ed is None or ed.empty:
-            return []
-
-        past = ed[ed['Reported EPS'].notna()].head(n_quarters)
-        return [dt.date() for dt in past.index]
+        rows = FMPClient().earnings_history(ticker, limit=n_quarters * 2)
+        dates: list[date] = []
+        for r in rows:
+            if r.get("eps") is None:  # not yet reported
+                continue
+            try:
+                dates.append(date.fromisoformat(r["date"]))
+            except (ValueError, TypeError):
+                continue
+        return dates[:n_quarters]
 
     except Exception as exc:
         logger.debug("Failed to fetch earnings dates for %s: %s", ticker, exc)

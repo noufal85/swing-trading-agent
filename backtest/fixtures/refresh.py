@@ -117,42 +117,33 @@ def refresh_yfinance_daily_bars() -> None:
     - Weekly resampling (needs ~420 daily bars for 80+ weeks)
     - Sufficient warmup for any backtest period
     """
-    import yfinance as yf
+    from datetime import date, timedelta
+    from providers.fmp_client import FMPClient
 
+    fmp = FMPClient()
     all_symbols = _build_all_symbols()
     clean_symbols, reverse_map = _sanitise_symbols(all_symbols)
-    print(f"\n[yfinance] Daily bars ({len(clean_symbols)} symbols, 2yr) ...")
+    end = date.today()
+    start = end - timedelta(days=760)  # ~2yr
+    print(f"\n[FMP] Daily bars ({len(clean_symbols)} symbols, 2yr) ...")
 
     fixture = {}
     failed = 0
-    batch_size = 20
-
-    for i in range(0, len(clean_symbols), batch_size):
-        batch = clean_symbols[i : i + batch_size]
-        batch_num = i // batch_size + 1
-        total_batches = (len(clean_symbols) + batch_size - 1) // batch_size
-        print(f"    Batch {batch_num}/{total_batches}: {batch[0]}..{batch[-1]}")
-
-        for sym in batch:
-            try:
-                ticker = yf.Ticker(sym)
-                df = ticker.history(period="2y", interval="1d")
-                if df.empty:
-                    failed += 1
-                    continue
-                df = df.rename(columns={
-                    "Open": "open", "High": "high", "Low": "low",
-                    "Close": "close", "Volume": "volume",
-                })
-                df = df[["open", "high", "low", "close", "volume"]]
-                df.index = df.index.tz_localize(None).strftime("%Y-%m-%d")
-                original_sym = reverse_map.get(sym, sym)
-                fixture[original_sym] = json.loads(df.to_json(orient="index"))
-            except Exception as exc:
-                print(f"      SKIP: {sym} ({exc})")
+    for i, sym in enumerate(clean_symbols):
+        try:
+            df = fmp.daily_bars(sym, start.isoformat(), end.isoformat())
+            if df.empty:
                 failed += 1
-
-        time.sleep(0.5)
+                continue
+            df = df[["open", "high", "low", "close", "volume"]].copy()
+            df.index = df.index.strftime("%Y-%m-%d")
+            original_sym = reverse_map.get(sym, sym)
+            fixture[original_sym] = json.loads(df.to_json(orient="index"))
+        except Exception as exc:
+            print(f"      SKIP: {sym} ({exc})")
+            failed += 1
+        if (i + 1) % 50 == 0:
+            print(f"    {i + 1}/{len(clean_symbols)} ({len(fixture)} ok, {failed} failed)")
 
     _save("yfinance/daily_bars.json", fixture)
     print(f"  Total: {len(fixture)} symbols saved ({failed} failed)")
@@ -168,44 +159,36 @@ def refresh_hourly_bars() -> None:
 
     yfinance hourly limit: ~730 trading days (2 years).
     """
-    import yfinance as yf
+    from datetime import date, timedelta
+    from providers import thetadata_client as theta
 
     all_symbols = _build_all_symbols()
     clean_symbols, reverse_map = _sanitise_symbols(all_symbols)
-    print(f"\n[yfinance] Hourly bars with extended hours ({len(clean_symbols)} symbols, 6mo) ...")
+    end = date.today()
+    start = end - timedelta(days=185)  # ~6mo
+    # CAVEAT: ThetaData intraday is regular-trading-hours only and timestamps are
+    # ET (tz-naive) — UNLIKE the prior yfinance prepost=True path, which included
+    # extended hours (4AM-7PM) as UTC. Backtests that depend on premarket/AH bars
+    # or UTC indexing must be re-validated against regenerated hourly fixtures.
+    print(f"\n[ThetaData] Hourly bars RTH ({len(clean_symbols)} symbols, 6mo) ...")
 
     fixture = {}
     failed = 0
-    batch_size = 20
-
-    for i in range(0, len(clean_symbols), batch_size):
-        batch = clean_symbols[i : i + batch_size]
-        batch_num = i // batch_size + 1
-        total_batches = (len(clean_symbols) + batch_size - 1) // batch_size
-        print(f"    Batch {batch_num}/{total_batches}: {batch[0]}..{batch[-1]}")
-
-        for sym in batch:
-            try:
-                ticker = yf.Ticker(sym)
-                df = ticker.history(period="6mo", interval="1h", prepost=True)
-                if df.empty:
-                    failed += 1
-                    continue
-                # Normalize columns to match fixture format
-                df = df.rename(columns={
-                    "Open": "open", "High": "high", "Low": "low",
-                    "Close": "close", "Volume": "volume",
-                })
-                df = df[["open", "high", "low", "close", "volume"]]
-                # Convert timezone-aware index to UTC ISO strings
-                df.index = df.index.tz_convert("UTC").strftime("%Y-%m-%dT%H:%M:%S")
-                original_sym = reverse_map.get(sym, sym)
-                fixture[original_sym] = json.loads(df.to_json(orient="index"))
-            except Exception as exc:
-                print(f"      SKIP: {sym} ({exc})")
+    for i, sym in enumerate(clean_symbols):
+        try:
+            df = theta.get_intraday(sym, start.isoformat(), end.isoformat(), interval="60m")
+            if df.empty:
                 failed += 1
-
-        time.sleep(0.5)
+                continue
+            df = df[["open", "high", "low", "close", "volume"]].copy()
+            df.index = df.index.strftime("%Y-%m-%dT%H:%M:%S")
+            original_sym = reverse_map.get(sym, sym)
+            fixture[original_sym] = json.loads(df.to_json(orient="index"))
+        except Exception as exc:
+            print(f"      SKIP: {sym} ({exc})")
+            failed += 1
+        if (i + 1) % 50 == 0:
+            print(f"    {i + 1}/{len(clean_symbols)} ({len(fixture)} ok, {failed} failed)")
 
     _save("yfinance/hourly_bars.json", fixture)
     print(f"  Total: {len(fixture)} symbols saved ({failed} failed)")
@@ -349,37 +332,37 @@ def refresh_yfinance_earnings() -> None:
       - earnings_risk.py for historical gap statistics
       - sentiment/earnings.py for blackout/PEAD screening
     """
-    import yfinance as yf
-    import pandas as pd
+    from providers.fmp_client import FMPClient
 
+    fmp = FMPClient()
     all_symbols = _build_all_symbols()
     # Exclude ETFs — only individual stocks have earnings
     etfs = set(INDEX_AND_BREADTH)
     stock_symbols = [s for s in all_symbols if s not in etfs]
     stock_symbols, reverse_map = _sanitise_symbols(stock_symbols)
-    print(f"\n[yfinance] Earnings dates ({len(stock_symbols)} stocks) ...")
+    print(f"\n[FMP] Earnings dates ({len(stock_symbols)} stocks) ...")
 
     fixture: dict[str, list[dict]] = {}
     failed = 0
     for i, sym in enumerate(stock_symbols):
         try:
-            t = yf.Ticker(sym)
-            ed = t.earnings_dates
-            if ed is not None and not ed.empty:
-                entries = []
-                for dt_idx, row in ed.head(12).iterrows():
-                    reported = row.get("Reported EPS")
-                    surprise = row.get("Surprise(%)")
-                    estimate = row.get("EPS Estimate")
-                    entries.append({
-                        "date": dt_idx.date().isoformat(),
-                        "eps_estimate": round(float(estimate), 2) if pd.notna(estimate) else None,
-                        "reported_eps": round(float(reported), 2) if pd.notna(reported) else None,
-                        "surprise_pct": round(float(surprise), 2) if pd.notna(surprise) else None,
-                    })
-                if entries:
-                    original_sym = reverse_map.get(sym, sym)
-                    fixture[original_sym] = entries
+            rows = fmp.earnings_history(sym, limit=12)
+            entries = []
+            for r in rows:
+                est = r.get("epsEstimated")
+                rep = r.get("eps")
+                surprise = None
+                if est not in (None, 0) and rep is not None:
+                    surprise = round((rep - est) / abs(est) * 100, 2)
+                entries.append({
+                    "date": r["date"],
+                    "eps_estimate": round(float(est), 2) if est is not None else None,
+                    "reported_eps": round(float(rep), 2) if rep is not None else None,
+                    "surprise_pct": surprise,
+                })
+            if entries:
+                original_sym = reverse_map.get(sym, sym)
+                fixture[original_sym] = entries
         except Exception as exc:
             failed += 1
             exc_msg = str(exc).split('\n')[0][:120]

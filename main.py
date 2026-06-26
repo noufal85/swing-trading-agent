@@ -121,10 +121,9 @@ class PersistingOrchestrator:
         try:
             if today not in _spy_cache:
                 try:
-                    import yfinance as yf
-                    spy = yf.Ticker("SPY")
-                    hist = spy.history(period="2d")
-                    _spy_cache[today] = float(hist["Close"].iloc[-1]) if not hist.empty else None
+                    from providers.fmp_client import FMPClient
+                    q = FMPClient().quote("SPY")
+                    _spy_cache[today] = float(q["price"]) if q and q.get("price") is not None else None
                 except Exception:
                     logger.debug("Could not fetch SPY close for daily stats")
                     _spy_cache[today] = None

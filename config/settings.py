@@ -70,9 +70,14 @@ class Settings(BaseSettings):
 
     # -------------------------------------------------------------------------
     # Market data providers
+    #   Live: FMP (daily bars, news, earnings, quotes) + ThetaData (intraday).
+    #   Polygon is used only for backtest news.
     # -------------------------------------------------------------------------
     polygon_api_key: str = ""
     alpha_vantage_key: str = ""
+    fmp_api_key: str = ""                       # Financial Modeling Prep
+    thetadata_host: str = "127.0.0.1"          # ThetaData terminal (host.docker.internal in container)
+    thetadata_port: str = "25503"
 
     # -------------------------------------------------------------------------
     # Risk parameters
