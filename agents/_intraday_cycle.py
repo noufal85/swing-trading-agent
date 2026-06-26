@@ -385,8 +385,11 @@ class IntradayCycleMixin:
                 if tick not in held_set:
                     continue
                 if isinstance(news_data, dict):
-                    score = news_data.get('composite_sentiment', 0.0)
-                    if score < s.intraday_news_sentiment_threshold:
+                    # composite_sentiment is None in yfinance/live mode (no pre-computed
+                    # sentiment — the LLM interprets headlines qualitatively elsewhere).
+                    # Only apply the numeric threshold when a real score exists (Polygon).
+                    score = news_data.get('composite_sentiment')
+                    if score is not None and score < s.intraday_news_sentiment_threshold:
                         if tick not in flagged:
                             flagged[tick] = []
                         flagged[tick].append(
