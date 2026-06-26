@@ -176,7 +176,7 @@ def refresh_hourly_bars() -> None:
     failed = 0
     for i, sym in enumerate(clean_symbols):
         try:
-            df = theta.get_intraday(sym, start.isoformat(), end.isoformat(), interval="60m")
+            df = theta.get_intraday(sym, start.isoformat(), end.isoformat(), interval="1h")
             if df.empty:
                 failed += 1
                 continue

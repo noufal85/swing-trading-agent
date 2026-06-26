@@ -172,7 +172,7 @@ class LiveProvider(DataProvider):
         else:
             for sym in symbols:
                 try:
-                    df = theta.get_intraday(sym, start_str, end_str, interval="60m")
+                    df = theta.get_intraday(sym, start_str, end_str, interval="1h")
                     if not df.empty:
                         result[sym] = df[["open", "high", "low", "close", "volume"]]
                 except Exception as exc:
